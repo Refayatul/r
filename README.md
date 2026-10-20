@@ -1,45 +1,44 @@
-# r — content-free scoring jobs
+# nsfw-score — content-free scorer for the modesty gate
 
-This repo exists only so heavy compute can run on GitHub Actions without touching the
-owner's laptop and without ever holding content-bearing data.
+A small, self-contained CLI that scores images for "not modest enough for the channel"
+against a pinned image classifier, so the heavy work happens on CI instead of on a laptop.
 
-Current job: `nsfw-score` (`.github/workflows/nsfw-score.yml`).
+It exists because the gate decision has to be reproducible and auditable: the same pinned
+model revision, the same frame-selection contract, the same numbers, on a machine that
+never holds the video files themselves. Everything this repo sees is a public preview URL.
 
-## Content-free guarantee
+## Layout
 
-The only input is `manifest.json`:
+| path | what it is |
+| :-- | :-- |
+| `score_nsfw.py` | the scorer: reads `manifest.json`, downloads each preview picture, writes per-frame probabilities |
+| `harness/frames.py` | the frame-selection contract (`0, n/3, 2n/3, n-1` of `n` preview pictures) and the public preview-URL shapes |
+| `harness/manifest.py` | flat-manifest construction: opaque query ids, one shuffled list, hygiene assertions |
+| `tests/` | unit tests for both harness modules (`pytest -q`) |
+| `.github/workflows/nsfw-score.yml` | the existing scoring job (runs 1–5, 108 clips / 431 frames) |
+| `.github/workflows/tests.yml` | runs the unit tests on every push |
+| `manifest.json` | the current job: `{clip key, public preview URLs}` — nothing else |
 
-```json
-{"note": "...", "frames_per_clip": {"pexels:123": 4},
- "clips": [{"key": "pexels:123", "frames": ["https://images.pexels.com/videos/123/pictures/preview-0.jpeg"]}]}
-```
+## Models (pinned)
 
-It contains clip keys and public preview URLs — nothing else. No owner labels or marks,
-no strata, no sealed keys, no API keys, no channel-identifying text, no frame images.
-The output artifact contains per-frame model probabilities keyed by clip key + URL, and
-is joined to labels locally.
+| role | model | revision |
+| :-- | :-- | :-- |
+| Freepik NSFW detector | `Freepik/nsfw_image_detector` | `15b85477e4fd2000db76ae9aae0f89a72f95e2e3` |
+| Marqo NSFW detector | `Marqo/nsfw-image-detection-384` | `0c26ec22111b83f106d72a55f611ec35962bcb65` |
 
-## Pinned models
+## Contract
 
-| model | revision | license |
-|---|---|---|
-| `Freepik/nsfw_image_detector` | `15b85477e4fd2000db76ae9aae0f89a72f95e2e3` | MIT |
-| `Marqo/nsfw-image-detection-384` | `0c26ec22111b83f106d72a55f611ec35962bcb65` | Apache-2.0 |
+* a manifest row is exactly `{"clip": "<source>:<id>", "query": "qNN", "frames": [urls]}`;
+  `harness.manifest.assert_hygiene` fails the build if any other field appears, if a query
+  is not opaque, or if a frame URL is not a public Pexels preview picture;
+* the clips the pipeline has already used and the clips it could draw are merged into **one
+  shuffled list** — the manifest must not say which is which;
+* frame indices are `0, n/3, 2n/3, n-1` for `n` preview pictures, never the order files
+  happen to be cached in (that mistake cost us one full re-run in October);
+* logs are aggregate only: counts and timings, never per-clip scores.
 
-Dependencies are pinned in the workflow (torch 2.14.1 CPU, transformers 5.20.1,
-timm 1.0.30, huggingface_hub 2.2.0, safetensors 0.8.0, pillow 13.0.0, requests 2.32.3).
-
-## Run
+## Running the tests
 
 ```bash
-gh workflow run nsfw-score -R Refayatul/r -f manifest=manifest.json
-gh run watch <run-id> -R Refayatul/r
-gh run download <run-id> -R Refayatul/r -n nsfw-scores
+python -m pytest -q tests
 ```
-
-## Failure policy
-
-Any non-200 / non-image response, any frame shorter than 1 kB, any exception, or any
-clip missing a frame aborts the job with a non-zero exit code. There are no silent
-skips and no fail-open paths. The job prints `FREEPIK_S_PER_FRAME` and
-`MARQO_S_PER_FRAME` so runner throughput is recorded with the artifacts.

@@ -1,0 +1,133 @@
+name: census-1
+
+# Pre-registered modesty-gate census. Runs ONLY on workflow_dispatch.
+# Contract: see the pre-registration note in the bench repo (CENSUS1_PREREG.md).
+# Nothing here reads labels, marks, strata or query text: the committed manifest holds
+# clip keys and public preview URLs, and the opaque query ids it already carries.
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: 'calibration | score | aggregate'
+        required: true
+        default: 'calibration'
+      chunk:
+        description: 'chunk index for stage=score (0-based)'
+        required: false
+        default: '0'
+
+concurrency:
+  group: census1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # pinned on purpose: the whole point of the census is that the numbers are reproducible
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+  HF_HUB_DISABLE_TELEMETRY: '1'
+  FREEPIK_REVISION: 15b85477e4fd2000db76ae9aae0f89a72f95e2e3
+  MARQO_REVISION: 0c26ec22111b83f106d72a55f611ec35962bcb65
+  SIGLIP_REVISION: main
+  MIN_COVERAGE: '0.98'
+
+jobs:
+  calibration:
+    if: ${{ github.event.inputs.stage == 'calibration' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install -q -r requirements.txt
+      - name: Calibrate (200 frames, 3 models) - prints seconds per frame only
+        run: python score_nsfw.py --manifest manifest.json --limit-clips 50 --models freepik,marqo,siglip --report-timing-only
+      - uses: actions/upload-artifact@v4
+        with:
+          name: census1-calibration
+          path: out/calibration.json
+          retention-days: 7
+
+  preflight:
+    if: ${{ github.event.inputs.stage == 'score' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: HEAD-check every preview URL (no downloads, no API key)
+        run: python score_nsfw.py --manifest manifest.json --preflight --fail-on-missing-fraction 0.30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: census1-preflight-${{ github.event.inputs.chunk }}
+          path: out/preflight_${{ github.event.inputs.chunk }}.json
+          retention-days: 7
+
+  score:
+    if: ${{ github.event.inputs.stage == 'score' }}
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        chunk: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install -q -r requirements.txt
+      - name: Score chunk ${{ matrix.chunk }} (checkpoint every 300 clips, 3 retries)
+        run: |
+          python score_nsfw.py \
+            --manifest manifest.json \
+            --chunk ${{ matrix.chunk }} --chunks 8 \
+            --models freepik,marqo,siglip \
+            --checkpoint-every 300 --resume \
+            --download-retries 3 --download-backoff 5 \
+            --record-download-failures \
+            --min-coverage $MIN_COVERAGE \
+            --aggregate-logs-only
+      - name: Determinism check (7 replay clips + 14 anchors, tolerance 1e-3)
+        run: python score_nsfw.py --manifest manifest.json --determinism-check --tolerance 1e-3
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: census1-chunk-${{ matrix.chunk }}
+          path: |
+            out/chunk_${{ matrix.chunk }}.jsonl
+            out/coverage_${{ matrix.chunk }}.json
+            out/download_failures_${{ matrix.chunk }}.json
+          retention-days: 7
+
+  aggregate:
+    if: ${{ github.event.inputs.stage == 'aggregate' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: census1-chunk-*
+          merge-multiple: true
+          path: out
+      - name: Merge chunks and report aggregate counts only
+        run: python score_nsfw.py --aggregate out --out out/census1_scores.jsonl
+      - name: Coverage gate
+        run: python score_nsfw.py --coverage-gate out --min-coverage $MIN_COVERAGE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: census1-scores
+          path: |
+            out/census1_scores.jsonl
+            out/coverage.json
+          retention-days: 7
