@@ -1,0 +1,49 @@
+name: nsfw-score
+
+# Content-free scoring job: manifest = clip keys + public preview URLs only.
+# No labels, marks, strata, keys or frame images live in this repo.
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest:
+        description: 'Manifest path in this repo'
+        required: true
+        default: 'manifest.json'
+
+jobs:
+  score:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pinned dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.14.1
+          pip install transformers==5.20.1 timm==1.0.30 huggingface_hub==2.2.0 \
+                      safetensors==0.8.0 pillow==13.0.0 requests==2.32.3
+
+      - name: Verify manifest hash
+        run: |
+          echo "manifest sha256: $(sha256sum "${{ inputs.manifest }}")"
+          echo "script sha256:   $(sha256sum score_nsfw.py)"
+
+      - name: Score
+        env:
+          MANIFEST_SHA256: ${{ hashFiles('manifest.json') }}
+        run: python score_nsfw.py --manifest "${{ inputs.manifest }}" --out scores
+
+      - name: Upload per-frame scores
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nsfw-scores
+          path: scores/
+          if-no-files-found: error
+          retention-days: 14
