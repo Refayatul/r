@@ -87,14 +87,14 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
 
     # 1) download every frame (hard fail on any problem)
-    local = {}
+    items = []  # (clip key, url, local path), in manifest order
     t0 = time.time()
     n = 0
     for c in clips:
         for url in c['frames']:
             p = work / f"{c['key'].replace(':', '_')}__{url.rsplit('/', 1)[-1]}"
             fetch(url, p)
-            local[(c['key'], url)] = p
+            items.append((c['key'], url, p))
             n += 1
             if n % 50 == 0 or n == total:
                 print(f'  downloaded {n}/{total} ({time.time()-t0:.0f}s)', flush=True)
@@ -111,8 +111,8 @@ def main() -> int:
 
     fp_scores = {}
     t0 = time.time()
-    for i, (key, url) in enumerate(local.items(), 1):
-        im = Image.open(local[(key, url)]).convert('RGB')
+    for i, (key, url, path) in enumerate(items, 1):
+        im = Image.open(path).convert('RGB')
         with torch.inference_mode():
             logits = fp(**proc(images=[im], return_tensors='pt')).logits
         probs = torch.softmax(logits.float(), dim=-1)[0].tolist()
@@ -134,8 +134,8 @@ def main() -> int:
 
     mq_scores = {}
     t0 = time.time()
-    for i, (key, url) in enumerate(local.items(), 1):
-        im = Image.open(local[(key, url)]).convert('RGB')
+    for i, (key, url, path) in enumerate(items, 1):
+        im = Image.open(path).convert('RGB')
         with torch.inference_mode():
             probs = torch.softmax(mq(tf(im).unsqueeze(0)), -1)[0].tolist()
         mq_scores[f'{key}|{url}'] = [round(float(x), 6) for x in probs]
