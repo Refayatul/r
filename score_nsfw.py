@@ -27,30 +27,44 @@ MARQO_REPO = 'Marqo/nsfw-image-detection-384'
 MARQO_REV = '0c26ec22111b83f106d72a55f611ec35962bcb65'
 
 
+def _candidates(url: str) -> list[str]:
+    base = url.rsplit('.', 1)[0]
+    out = [url]
+    for ext in ('jpeg', 'jpg', 'png'):
+        alt = f'{base}.{ext}'
+        if alt not in out:
+            out.append(alt)
+    return out
+
+
 def fetch(url: str, dest: Path) -> None:
-    last = None
-    for attempt in range(3):
-        try:
-            r = requests.get(url, timeout=60, headers={'User-Agent': 'nsfw-score/1.0'})
-            if r.status_code != 200:
-                last = f'HTTP {r.status_code}'
+    """Download and validate one frame. Never skips: raises if no candidate decodes."""
+    reasons = []
+    for candidate in _candidates(url):
+        for attempt in range(3):
+            try:
+                r = requests.get(candidate, timeout=60, headers={'User-Agent': 'nsfw-score/1.0'})
+                if r.status_code != 200:
+                    reasons.append(f'{candidate}: HTTP {r.status_code}')
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                ctype = r.headers.get('Content-Type', '')
+                if not ctype.startswith('image/'):
+                    reasons.append(f'{candidate}: content-type {ctype!r}')
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                dest.write_bytes(r.content)
+                with Image.open(dest) as im:
+                    im.load()
+                    w, h = im.size
+                if min(w, h) < 64:
+                    reasons.append(f'{candidate}: too small {w}x{h}')
+                    break
+                return
+            except Exception as e:  # network/decode error: retry, never silently skip
+                reasons.append(f'{candidate}: {e!r}')
                 time.sleep(2 * (attempt + 1))
-                continue
-            ctype = r.headers.get('Content-Type', '')
-            if not ctype.startswith('image/'):
-                last = f'content-type {ctype!r}'
-                time.sleep(2 * (attempt + 1))
-                continue
-            if len(r.content) < 1000:
-                last = f'short body {len(r.content)} B'
-                time.sleep(2 * (attempt + 1))
-                continue
-            dest.write_bytes(r.content)
-            return
-        except Exception as e:  # network error: retry, but never silently skip
-            last = repr(e)
-            time.sleep(2 * (attempt + 1))
-    raise RuntimeError(f'failed to fetch {url}: {last}')
+    raise RuntimeError(f'failed to fetch {url}: ' + '; '.join(reasons[-4:]))
 
 
 def main() -> int:
