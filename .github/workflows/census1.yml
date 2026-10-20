@@ -1,9 +1,9 @@
 name: census-1
 
-# Pre-registered modesty-gate census. Runs ONLY on workflow_dispatch.
-# Contract: see the pre-registration note in the bench repo (CENSUS1_PREREG.md).
-# Nothing here reads labels, marks, strata or query text: the committed manifest holds
-# clip keys and public preview URLs, and the opaque query ids it already carries.
+# Pre-registered census run for the modesty gate. Runs ONLY on workflow_dispatch.
+# Nothing here reads owner labels, marks, strata or query text: the committed manifest holds
+# clip keys, public preview URLs and opaque query ids only, and harness.manifest.assert_hygiene
+# fails the build if that ever stops being true.
 on:
   workflow_dispatch:
     inputs:

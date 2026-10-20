@@ -24,12 +24,19 @@ CLIP_RE = re.compile(r'^(pexels|pixabay):\d+$')
 QID_RE = re.compile(r'^q\d{2,}$')
 URL_RE = re.compile(r'^https://(images|static-videos)\.pexels\.com/videos/\d+/pictures/preview-\d+\.(jpeg|jpg)$')
 
-#: Words that must never appear anywhere in a public manifest.
-FORBIDDEN_WORDS = (
-    'modest', 'hijab', 'pray', 'muslim', 'bikini', 'nsfw', 'swimwear',
-    'zaitoon', 'channel', 'label', 'mark', 'stratum', 'used', 'candidate',
-    'holdout', 'freepik', 'marqo', 'siglip', 'score',
-)
+#: Structural leak check. The domain-specific denylist is deliberately NOT in this public
+#: repo: it lives in `denylist.local.txt` (gitignored) so the public code never names the
+#: channel's subject matter. If that file is absent only the structural checks run.
+DENYLIST_FILE = 'denylist.local.txt'
+
+
+def _local_denylist() -> tuple[str, ...]:
+    from pathlib import Path
+
+    p = Path(__file__).resolve().parents[1] / DENYLIST_FILE
+    if not p.exists():
+        return ()
+    return tuple(w.strip().lower() for w in p.read_text().splitlines() if w.strip())
 
 
 def opaque_qids(queries: Iterable[str], width: int = 2) -> dict[str, str]:
@@ -73,7 +80,7 @@ def assert_hygiene(rows: Sequence[dict]) -> None:
             if not URL_RE.match(str(u)):
                 raise ValueError(f'row {i}: frame URL is not a public preview URL')
             low = str(u).lower()
-            if any(w in low for w in FORBIDDEN_WORDS):
+            if any(w in low for w in _local_denylist()):
                 raise ValueError(f'row {i}: forbidden word in URL')
 
 

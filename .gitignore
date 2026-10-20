@@ -1,2 +1,5 @@
+denylist.local.txt
+out/
 __pycache__/
 *.pyc
+denylist.local.txt
