@@ -26,27 +26,43 @@ env:
   HF_HUB_DISABLE_TELEMETRY: '1'
   FREEPIK_REVISION: 15b85477e4fd2000db76ae9aae0f89a72f95e2e3
   MARQO_REVISION: 0c26ec22111b83f106d72a55f611ec35962bcb65
-  SIGLIP_REVISION: main
+  SIGLIP_REVISION: 75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2
   MIN_COVERAGE: '0.98'
 
 jobs:
   calibration:
     if: ${{ github.event.inputs.stage == 'calibration' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 75
+    env:
+      # label text and reference maxima are repository secrets: never echoed, never in artifacts
+      MODESTY_LABEL: ${{ secrets.MODESTY_LABEL }}
+      CENSUS_REF_SCORES: ${{ secrets.CENSUS_REF_SCORES }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: pip
+      - name: Cache Hugging Face models (pinned revisions)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ runner.os }}-freepik-15b85477-marqo-0c26ec22-siglip2-75de2d55
       - run: python -m pip install -q -r requirements.txt
-      - name: Calibrate (200 frames, 3 models) - prints seconds per frame only
-        run: python score_nsfw.py --manifest manifest.json --limit-clips 50 --models freepik,marqo,siglip --report-timing-only
+      - name: Unit tests
+        run: python -m pytest -q tests
+      - name: Calibrate (200 frames, 3 models) - seconds/frame only
+        run: python score_nsfw.py --manifest manifest_calibration.json --limit-clips 50 --models freepik,marqo,siglip --report-timing-only
+      - name: Cross-check 113 clips (14 anchors + 108 runner clips) against local maxima at 1e-3
+        run: python score_nsfw.py --manifest manifest_calibration.json --models freepik,marqo,siglip --cross-check-ref CENSUS_REF_SCORES --tolerance 1e-3 --out out
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: census1-calibration
-          path: out/calibration.json
+          path: |
+            out/calibration.json
+            out/cross_check.json
           retention-days: 7
 
   preflight:

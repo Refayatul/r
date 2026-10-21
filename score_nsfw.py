@@ -1,30 +1,62 @@
 #!/usr/bin/env python3
-"""Score a content-free manifest (clip keys + public preview URLs) with two pinned
-NSFW detectors and emit per-frame probabilities.
+"""Score a content-free manifest (clip keys + public preview URLs) with pinned
+modesty/NSFW detectors and emit per-frame probabilities.
 
 Models (revisions pinned; see README):
   - Freepik/nsfw_image_detector @ 15b85477e4fd2000db76ae9aae0f89a72f95e2e3  (MIT)
   - Marqo/nsfw-image-detection-384 @ 0c26ec22111b83f106d72a55f611ec35962bcb65 (Apache-2.0)
+  - google/siglip2-base-patch16-224 @ 75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2
+    (the model production uses; the label text comes from a repository secret and is
+     never written to logs, results or artifacts)
+
+SigLIP outputs, matching production (visual_director.py, label index 0):
+  cosine  = normalised image embedding . normalised text embedding
+  logit   = logit_scale * cosine + logit_bias      (logit_scale/bias from the model)
+  prob    = sigmoid(logit)                          (this is what production thresholds)
 
 Fails loudly: any unresolved URL, any non-image response, any missing frame, any
 exception aborts the job with a non-zero exit code. No silent skips.
 """
 import argparse
+import hashlib
 import json
+import math
 import os
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import requests
 import torch
 from huggingface_hub import snapshot_download
 from PIL import Image
 
+from harness.siglip import (  # pure helpers, importable without torch
+    LABEL_ENV,
+    MODEL_NAMES,
+    SIGLIP_REPO,
+    SIGLIP_REV,
+    cross_check,
+    label_banner,
+    load_label,
+    parse_models,
+    per_clip_max,
+    sigmoid_prob,
+)
+
 FREEPIK_REPO = 'Freepik/nsfw_image_detector'
 FREEPIK_REV = '15b85477e4fd2000db76ae9aae0f89a72f95e2e3'
 MARQO_REPO = 'Marqo/nsfw-image-detection-384'
 MARQO_REV = '0c26ec22111b83f106d72a55f611ec35962bcb65'
+
+
+
+
+
+
+
+
 
 
 def _candidates(url: str) -> list[str]:
@@ -67,23 +99,122 @@ def fetch(url: str, dest: Path) -> None:
     raise RuntimeError(f'failed to fetch {url}: ' + '; '.join(reasons[-4:]))
 
 
+def preflight(clips: list[dict], out: Path, fail_fraction: float) -> int:
+    """HEAD every preview URL. No downloads, no API key. Writes out/preflight.json."""
+    missing, total = [], 0
+    for c in clips:
+        for url in c['frames']:
+            total += 1
+            ok = False
+            for candidate in _candidates(url):
+                try:
+                    r = requests.head(candidate, timeout=20, allow_redirects=True,
+                                      headers={'User-Agent': 'census-preflight/1.0'})
+                    if r.status_code == 200:
+                        ok = True
+                        break
+                except Exception:
+                    continue
+            if not ok:
+                missing.append({'key': c['key'], 'url': url})
+    frac = (len(missing) / total) if total else 1.0
+    out.mkdir(parents=True, exist_ok=True)
+    (out / 'preflight.json').write_text(json.dumps(
+        {'frames': total, 'missing': len(missing), 'missing_fraction': round(frac, 4),
+         'missing_keys': sorted({m['key'] for m in missing})}, indent=1))
+    print(f'preflight: {total - len(missing)}/{total} frames reachable '
+          f'({frac:.2%} missing, limit {fail_fraction:.0%})', flush=True)
+    if frac > fail_fraction:
+        print('preflight FAILED: too many unreachable previews', flush=True)
+        return 1
+    return 0
+
+
+def load_siglip(device: str):
+    from transformers import AutoProcessor, SiglipModel
+    d = snapshot_download(SIGLIP_REPO, revision=SIGLIP_REV)
+    proc = AutoProcessor.from_pretrained(d)
+    model = SiglipModel.from_pretrained(d, dtype=torch.float32).eval().to(device)
+    return proc, model
+
+
+def score_siglip(items, proc, model, label, device):
+    """Returns (per-frame list, seconds, meta). Batches the 4 frames of a clip."""
+    import numpy as _np  # heavy import kept local; numpy ships with torch
+    from collections import defaultdict, OrderedDict
+
+    frames = OrderedDict()
+    for key, url, path in items:
+        frames.setdefault(key, []).append((url, path))
+
+    with torch.inference_mode():
+        tok = proc(text=[label], padding='max_length', truncation=True,
+                   return_tensors='pt').to(device)
+        text = model.get_text_features(**tok)
+        text = text / text.norm(dim=-1, keepdim=True)
+
+    logit_scale = float(model.logit_scale.exp().to('cpu'))
+    logit_bias = float(model.logit_bias.to('cpu')) if model.logit_bias is not None else 0.0
+
+    out = {}
+    t0 = time.time()
+    done = 0
+    for key, pairs in frames.items():
+        imgs = [Image.open(p).convert('RGB') for _, p in pairs]
+        with torch.inference_mode():
+            inp = proc(images=imgs, return_tensors='pt').to(device)
+            emb = model.get_image_features(**inp)
+            emb = emb / emb.norm(dim=-1, keepdim=True)
+            cos = (emb @ text.T).squeeze(-1).to('cpu').tolist()
+        for (url, _), c in zip(pairs, cos):
+            out[f'{key}|{url}'] = {'cosine': round(float(c), 6),
+                                   'prob': round(sigmoid_prob(float(c), logit_scale, logit_bias), 6)}
+        done += len(pairs)
+        if done % 40 < 4 or done == len(items):
+            el = time.time() - t0
+            print(f'  siglip {done}/{len(items)} ({el:.0f}s, {el/done:.2f}s/frame)', flush=True)
+    return out, time.time() - t0, {'logit_scale': round(logit_scale, 6),
+                                   'logit_bias': round(logit_bias, 6)}
+
+
+
+
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--manifest', required=True)
-    ap.add_argument('--out', required=True)
+    ap.add_argument('--out', default='out')
+    ap.add_argument('--models', default='freepik,marqo,siglip')
+    ap.add_argument('--limit-clips', type=int, default=0,
+                    help='score only the first N clips (calibration)')
+    ap.add_argument('--report-timing-only', action='store_true',
+                    help='write only seconds/frame and counts, no per-frame scores')
+    ap.add_argument('--preflight', action='store_true')
+    ap.add_argument('--fail-on-missing-fraction', type=float, default=0.30)
+    ap.add_argument('--label-env', default='MODESTY_LABEL')
+    ap.add_argument('--cross-check-ref', default='',
+                    help="env var name holding a JSON map {model: {clip: value}}")
+    ap.add_argument('--tolerance', type=float, default=1e-3)
     args = ap.parse_args()
 
     torch.set_num_threads(os.cpu_count() or 2)
     man = json.load(open(args.manifest))
     clips = man['clips']
     assert clips, 'empty manifest'
+    if args.limit_clips:
+        clips = clips[:args.limit_clips]
     keys = [c['key'] for c in clips]
     assert len(keys) == len(set(keys)), 'duplicate clip keys in manifest'
     total = sum(len(c['frames']) for c in clips)
+    out = Path(args.out)
 
+    if args.preflight:
+        return preflight(clips, out, args.fail_on_missing_fraction)
+
+    models = parse_models(args.models)
     work = Path('/tmp/frames')
     work.mkdir(parents=True, exist_ok=True)
-    out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
     # 1) download every frame (hard fail on any problem)
@@ -100,74 +231,131 @@ def main() -> int:
                 print(f'  downloaded {n}/{total} ({time.time()-t0:.0f}s)', flush=True)
     assert n == total, (n, total)
 
-    # 2) Freepik
-    print('loading Freepik', FREEPIK_REPO, FREEPIK_REV, flush=True)
-    from transformers import AutoImageProcessor, AutoModelForImageClassification
-    fp_dir = snapshot_download(FREEPIK_REPO, revision=FREEPIK_REV)
-    proc = AutoImageProcessor.from_pretrained(fp_dir)
-    fp = AutoModelForImageClassification.from_pretrained(fp_dir, dtype=torch.float32).eval()
-    fp_labels = {int(k): v for k, v in fp.config.id2label.items()}
-    print('Freepik labels:', fp_labels, flush=True)
+    result = {'manifest': args.manifest, 'models': models, 'clips': keys, 'frames_total': total}
+    per_model_clip = {}
 
-    fp_scores = {}
-    t0 = time.time()
-    for i, (key, url, path) in enumerate(items, 1):
-        im = Image.open(path).convert('RGB')
-        with torch.inference_mode():
-            logits = fp(**proc(images=[im], return_tensors='pt')).logits
-        probs = torch.softmax(logits.float(), dim=-1)[0].tolist()
-        fp_scores[f'{key}|{url}'] = [round(float(x), 6) for x in probs]
-        if i % 25 == 0 or i == total:
-            el = time.time() - t0
-            print(f'  freepik {i}/{total} ({el:.0f}s, {el/i:.2f}s/frame)', flush=True)
-    fp_elapsed = time.time() - t0
-    print(f'FREEPIK_S_PER_FRAME={fp_elapsed/total:.3f} frames={total}', flush=True)
+    # 2) Freepik
+    fp_scores, fp_elapsed, fp_labels = {}, 0.0, {}
+    if 'freepik' in models:
+        print('loading Freepik', FREEPIK_REPO, FREEPIK_REV, flush=True)
+        from transformers import AutoImageProcessor, AutoModelForImageClassification
+        fp_dir = snapshot_download(FREEPIK_REPO, revision=FREEPIK_REV)
+        proc = AutoImageProcessor.from_pretrained(fp_dir)
+        fp = AutoModelForImageClassification.from_pretrained(fp_dir, dtype=torch.float32).eval()
+        fp_labels = {int(k): v for k, v in fp.config.id2label.items()}
+        print('Freepik labels:', fp_labels, flush=True)
+        t0 = time.time()
+        for i, (key, url, path) in enumerate(items, 1):
+            im = Image.open(path).convert('RGB')
+            with torch.inference_mode():
+                logits = fp(**proc(images=[im], return_tensors='pt')).logits
+            probs = torch.softmax(logits.float(), dim=-1)[0].tolist()
+            fp_scores[f'{key}|{url}'] = [round(float(x), 6) for x in probs]
+            if i % 25 == 0 or i == total:
+                el = time.time() - t0
+                print(f'  freepik {i}/{total} ({el:.0f}s, {el/i:.2f}s/frame)', flush=True)
+        fp_elapsed = time.time() - t0
+        print(f'FREEPIK_S_PER_FRAME={fp_elapsed/total:.3f} frames={total}', flush=True)
+        result['freepik'] = {'repo': FREEPIK_REPO, 'revision': FREEPIK_REV,
+                             'labels': {str(k): v for k, v in fp_labels.items()},
+                             's_per_frame': round(fp_elapsed / total, 4)}
+        per_model_clip['freepik'] = {
+            k: max(1.0 - v[0] for kk, v in fp_scores.items() if kk.startswith(k + '|'))
+            for k in keys}
 
     # 3) Marqo
-    print('loading Marqo', MARQO_REPO, MARQO_REV, flush=True)
-    import timm
-    from safetensors.torch import load_file
-    mq_dir = snapshot_download(MARQO_REPO, revision=MARQO_REV)
-    mq = timm.create_model('vit_tiny_patch16_384', pretrained=False, num_classes=2).eval()
-    mq.load_state_dict(load_file(os.path.join(mq_dir, 'model.safetensors')), strict=True)
-    tf = timm.data.create_transform(**timm.data.resolve_model_data_config(mq), is_training=False)
+    mq_scores, mq_elapsed = {}, 0.0
+    if 'marqo' in models:
+        print('loading Marqo', MARQO_REPO, MARQO_REV, flush=True)
+        import timm
+        from safetensors.torch import load_file
+        mq_dir = snapshot_download(MARQO_REPO, revision=MARQO_REV)
+        mq = timm.create_model('vit_tiny_patch16_384', pretrained=False, num_classes=2).eval()
+        mq.load_state_dict(load_file(os.path.join(mq_dir, 'model.safetensors')), strict=True)
+        tf = timm.data.create_transform(**timm.data.resolve_model_data_config(mq), is_training=False)
+        t0 = time.time()
+        for i, (key, url, path) in enumerate(items, 1):
+            im = Image.open(path).convert('RGB')
+            with torch.inference_mode():
+                probs = torch.softmax(mq(tf(im).unsqueeze(0)), -1)[0].tolist()
+            mq_scores[f'{key}|{url}'] = [round(float(x), 6) for x in probs]
+            if i % 50 == 0 or i == total:
+                el = time.time() - t0
+                print(f'  marqo {i}/{total} ({el:.0f}s, {el/i:.2f}s/frame)', flush=True)
+        mq_elapsed = time.time() - t0
+        print(f'MARQO_S_PER_FRAME={mq_elapsed/total:.3f} frames={total}', flush=True)
+        result['marqo'] = {'repo': MARQO_REPO, 'revision': MARQO_REV,
+                           'labels': ['NSFW', 'SFW'],
+                           's_per_frame': round(mq_elapsed / total, 4)}
+        per_model_clip['marqo'] = {
+            k: max(v[0] for kk, v in mq_scores.items() if kk.startswith(k + '|'))
+            for k in keys}
 
-    mq_scores = {}
-    t0 = time.time()
-    for i, (key, url, path) in enumerate(items, 1):
-        im = Image.open(path).convert('RGB')
-        with torch.inference_mode():
-            probs = torch.softmax(mq(tf(im).unsqueeze(0)), -1)[0].tolist()
-        mq_scores[f'{key}|{url}'] = [round(float(x), 6) for x in probs]
-        if i % 50 == 0 or i == total:
-            el = time.time() - t0
-            print(f'  marqo {i}/{total} ({el:.0f}s, {el/i:.2f}s/frame)', flush=True)
-    mq_elapsed = time.time() - t0
-    print(f'MARQO_S_PER_FRAME={mq_elapsed/total:.3f} frames={total}', flush=True)
+    # 4) SigLIP (production model; label from secret)
+    sg_scores, sg_elapsed, sg_meta = {}, 0.0, {}
+    if 'siglip' in models:
+        label = load_label(args.label_env)
+        print(label_banner(label), flush=True)
+        print('loading SigLIP', SIGLIP_REPO, SIGLIP_REV, flush=True)
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        proc, model = load_siglip(device)
+        sg_scores, sg_elapsed, sg_meta = score_siglip(items, proc, model, label, device)
+        print(f'SIGLIP_S_PER_FRAME={sg_elapsed/total:.3f} frames={total}', flush=True)
+        result['siglip'] = {'repo': SIGLIP_REPO, 'revision': SIGLIP_REV,
+                            'label_source': f'secret:{args.label_env}',
+                            'signal': 'sigmoid(logit_scale*cosine+logit_bias)',
+                            **sg_meta,
+                            's_per_frame': round(sg_elapsed / total, 4)}
+        per_model_clip['siglip'] = {
+            k: max(v['cosine'] for kk, v in sg_scores.items() if kk.startswith(k + '|'))
+            for k in keys}
+        result['siglip_probs'] = {
+            k: max(v['prob'] for kk, v in sg_scores.items() if kk.startswith(k + '|'))
+            for k in keys}
 
-    # 4) hard completeness check
-    assert len(fp_scores) == total, (len(fp_scores), total)
-    assert len(mq_scores) == total, (len(mq_scores), total)
+    # 5) hard completeness check
     for c in clips:
         for url in c['frames']:
             k = f"{c['key']}|{url}"
-            assert k in fp_scores and k in mq_scores, f'missing {k}'
+            if 'freepik' in models:
+                assert k in fp_scores, f'missing freepik {k}'
+            if 'marqo' in models:
+                assert k in mq_scores, f'missing marqo {k}'
+            if 'siglip' in models:
+                assert k in sg_scores, f'missing siglip {k}'
 
-    result = {
-        'freepik': {'repo': FREEPIK_REPO, 'revision': FREEPIK_REV,
-                    'labels': {str(k): v for k, v in fp_labels.items()},
-                    's_per_frame': round(fp_elapsed / total, 4),
-                    'frames': fp_scores},
-        'marqo': {'repo': MARQO_REPO, 'revision': MARQO_REV,
-                  'labels': ['NSFW', 'SFW'],
-                  's_per_frame': round(mq_elapsed / total, 4),
-                  'frames': mq_scores},
-        'manifest': args.manifest,
-        'manifest_sha256': os.environ.get('MANIFEST_SHA256'),
-        'clips': keys,
-        'frames_total': total,
-        'elapsed_s': round(fp_elapsed + mq_elapsed, 1),
-    }
+    # 6) cross-check against reference maxima (numbers only; no reference values echoed)
+    if args.cross_check_ref:
+        raw = os.environ.get(args.cross_check_ref, '')
+        if not raw.strip():
+            raise SystemExit(f'reference secret {args.cross_check_ref!r} is empty')
+        refs = json.loads(raw)
+        report = cross_check(per_model_clip, refs, args.tolerance)
+        (out / 'cross_check.json').write_text(json.dumps(report, indent=1))
+        print('CROSS_CHECK ' + json.dumps(report), flush=True)
+        for m, r in report.items():
+            if r['clips_compared'] and r['max_abs_delta'] is not None:
+                print(f"  {m}: {r['clips_compared']} clips, max|delta|={r['max_abs_delta']}, "
+                      f"outside tol: {r['n_outside_tol']}", flush=True)
+
+    if args.report_timing_only:
+        timing = {m: {k: v for k, v in result[m].items()
+                      if k in ('repo', 'revision', 's_per_frame', 'logit_scale', 'logit_bias')}
+                  for m in models if m in result}
+        timing['frames_total'] = total
+        timing['clips'] = len(keys)
+        (out / 'calibration.json').write_text(json.dumps(timing, indent=1))
+        print('wrote', out / 'calibration.json', flush=True)
+        return 0
+
+    result['elapsed_s'] = round(fp_elapsed + mq_elapsed + sg_elapsed, 1)
+    result['manifest_sha256'] = hashlib.sha256(Path(args.manifest).read_bytes()).hexdigest()
+    if 'freepik' in models:
+        result['freepik']['frames'] = fp_scores
+    if 'marqo' in models:
+        result['marqo']['frames'] = mq_scores
+    if 'siglip' in models:
+        result['siglip']['frames'] = sg_scores
     dest = out / 'scores.json'
     dest.write_text(json.dumps(result, indent=1))
     print('wrote', dest, flush=True)
