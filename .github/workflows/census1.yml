@@ -88,6 +88,8 @@ jobs:
     needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      MODESTY_LABEL: ${{ secrets.MODESTY_LABEL }}
     strategy:
       fail-fast: false
       max-parallel: 6
