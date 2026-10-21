@@ -77,3 +77,37 @@ def cross_check(computed: dict, refs: dict, tol: float) -> dict:
             'tolerance': tol,
         }
     return report
+
+
+def audit_selected(key: str, salt: str, fraction: float) -> bool:
+    """Deterministic audit draw: same clip always gets the same decision."""
+    import hashlib
+    if fraction <= 0:
+        return False
+    if fraction >= 1:
+        return True
+    h = hashlib.sha256(f'{salt}|{key}'.encode()).digest()
+    return (h[0] / 255.0) < fraction
+
+
+def select_freepik_clips(cos_by_clip: dict, marqo_by_clip: dict, cos_t: float,
+                         marqo_t: float, audit_fraction: float, salt: str) -> dict:
+    """Cascade: run Freepik unless the cheap models clear the clip; always audit a sample.
+
+    Fail closed: a clip missing either cheap score is never skipped.
+    """
+    run, skipped, audited = [], [], []
+    for key in sorted(cos_by_clip):
+        cos = cos_by_clip.get(key)
+        mq = marqo_by_clip.get(key)
+        if cos is None or mq is None:
+            run.append(key)
+            continue
+        if cos >= cos_t or mq >= marqo_t:
+            run.append(key)
+        elif audit_selected(key, salt, audit_fraction):
+            run.append(key)
+            audited.append(key)
+        else:
+            skipped.append(key)
+    return {'run': run, 'skipped': skipped, 'audited': audited}

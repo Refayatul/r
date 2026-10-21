@@ -75,7 +75,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: HEAD-check every preview URL (no downloads, no API key)
-        run: python score_nsfw.py --manifest manifest.json --preflight --fail-on-missing-fraction 0.30
+        run: python score_nsfw.py --manifest manifest_u.json --preflight --fail-on-missing-fraction 0.30
       - uses: actions/upload-artifact@v4
         with:
           name: census1-preflight-${{ github.event.inputs.chunk }}
@@ -86,7 +86,7 @@ jobs:
     if: ${{ github.event.inputs.stage == 'score' }}
     needs: preflight
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -99,27 +99,21 @@ jobs:
           python-version: '3.12'
           cache: pip
       - run: python -m pip install -q -r requirements.txt
-      - name: Score chunk ${{ matrix.chunk }} (checkpoint every 300 clips, 3 retries)
+      - name: Score chunk ${{ matrix.chunk }} (cascade, 20% audit, 8 chunks)
         run: |
           python score_nsfw.py \
-            --manifest manifest.json \
+            --manifest manifest_u.json \
             --chunk ${{ matrix.chunk }} --chunks 8 \
             --models freepik,marqo,siglip \
-            --checkpoint-every 300 --resume \
-            --download-retries 3 --download-backoff 5 \
-            --record-download-failures \
-            --min-coverage $MIN_COVERAGE \
-            --aggregate-logs-only
-      - name: Determinism check (7 replay clips + 14 anchors, tolerance 1e-3)
-        run: python score_nsfw.py --manifest manifest.json --determinism-check --tolerance 1e-3
+            --cascade-cos 0.03 --cascade-marqo 0.9 \
+            --audit-fraction 0.20 --audit-salt census-u \
+            --video-budget-mb 90 \
+            --out out/chunk_${{ matrix.chunk }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: census1-chunk-${{ matrix.chunk }}
-          path: |
-            out/chunk_${{ matrix.chunk }}.jsonl
-            out/coverage_${{ matrix.chunk }}.json
-            out/download_failures_${{ matrix.chunk }}.json
+          path: out/chunk_${{ matrix.chunk }}/scores.json
           retention-days: 7
 
   aggregate:

@@ -74,3 +74,24 @@ def test_per_clip_max_uses_all_frames():
               'pexels:2|a': {'cosine': 0.02}}
     got = score.per_clip_max(scores, ['pexels:1', 'pexels:2'], 'cosine')
     assert got == {'pexels:1': 0.09, 'pexels:2': 0.02}
+
+
+def test_cascade_never_skips_a_flagged_clip():
+    cos = {'a': 0.01, 'b': 0.09, 'c': 0.02}
+    mq = {'a': 0.1, 'b': 0.2, 'c': 0.95}
+    out = score.select_freepik_clips(cos, mq, 0.03, 0.9, 0.0, 'salt')
+    assert 'b' in out['run'] and 'c' in out['run']  # cos or marqo clears the cut
+    assert out['skipped'] == ['a']
+
+
+def test_cascade_fails_closed_on_missing_score():
+    out = score.select_freepik_clips({'a': 0.01, 'b': None}, {'a': 0.1, 'b': 0.1},
+                                     0.03, 0.9, 0.0, 'salt')
+    assert 'b' in out['run']
+
+
+def test_audit_is_deterministic_and_bounded():
+    keys = [f'pexels:{i}' for i in range(200)]
+    picks = {k for k in keys if score.audit_selected(k, 'census-u', 0.2)}
+    assert picks == {k for k in keys if score.audit_selected(k, 'census-u', 0.2)}
+    assert 20 <= len(picks) <= 60  # ~20% of 200, generous band for one salt
