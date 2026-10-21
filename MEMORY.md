@@ -4,3 +4,4 @@
 - Dropped features: keep the code, disable the calling; registry in `docs/DISABLED_FEATURES.md`.
 - SigLIP label text and reference maxima live in repository secrets (`MODESTY_LABEL`,
   `CENSUS_REF_SCORES`) and must never appear in logs, artifacts or commits.
+- Manifests are not committed here: dispatch with a private `manifest_url` (workflow input).

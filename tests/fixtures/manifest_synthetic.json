@@ -1,0 +1,27 @@
+{
+ "note": "synthetic fixture: fake clip ids, public preview URL pattern, no real data",
+ "clips": [
+  {
+   "key": "pexels:1",
+   "frames": [
+    "https://images.pexels.com/videos/1/pictures/preview-0.jpeg",
+    "https://images.pexels.com/videos/1/pictures/preview-1.jpeg",
+    "https://images.pexels.com/videos/1/pictures/preview-2.jpeg",
+    "https://images.pexels.com/videos/1/pictures/preview-3.jpeg"
+   ]
+  },
+  {
+   "key": "pexels:2",
+   "frames": [
+    "https://images.pexels.com/videos/2/pictures/preview-0.jpeg",
+    "https://images.pexels.com/videos/2/pictures/preview-1.jpeg",
+    "https://images.pexels.com/videos/2/pictures/preview-2.jpeg",
+    "https://images.pexels.com/videos/2/pictures/preview-3.jpeg"
+   ]
+  }
+ ],
+ "frames_per_clip": {
+  "pexels:1": 4,
+  "pexels:2": 4
+ }
+}

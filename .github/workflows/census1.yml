@@ -1,8 +1,9 @@
 name: census-1
 
 # Pre-registered census run for the modesty gate. Runs ONLY on workflow_dispatch.
-# Nothing here reads owner labels, marks, strata or query text: the committed manifest holds
-# clip keys, public preview URLs and opaque query ids only, and harness.manifest.assert_hygiene
+# Manifests are NOT in this public repo: dispatch with a private manifest URL (manifest_url)
+# or run the job in the private repo. Nothing here reads owner labels, marks, strata or query text:
+# a manifest holds clip keys, public preview URLs and opaque query ids only, and harness.manifest.assert_hygiene
 # fails the build if that ever stops being true.
 on:
   workflow_dispatch:
@@ -15,6 +16,10 @@ on:
         description: 'chunk index for stage=score (0-based)'
         required: false
         default: '0'
+      manifest_url:
+        description: 'Private URL to the manifest JSON (required for calibration/score; manifests are not in this repo)'
+        required: false
+        default: ''
 
 concurrency:
   group: census1-${{ github.ref }}
@@ -102,6 +107,17 @@ jobs:
           python-version: '3.12'
           cache: pip
       - run: python -m pip install -q -r requirements.txt
+      - name: Fetch private manifest
+        env:
+          URL: ${{ github.event.inputs.manifest_url }}
+        run: |
+          set -euo pipefail
+          if [ -z "$URL" ]; then
+            echo "::error::No manifest_url. Manifests are not in this public repo — dispatch from the private repo or pass a private URL."
+            exit 1
+          fi
+          curl -fsSL "$URL" -o manifest_u.json
+          sha256sum manifest_u.json
       - name: Install ffmpeg (video arm)
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
       - name: Score chunk ${{ matrix.chunk }} (cascade, 20% audit, 8 chunks)

@@ -11,13 +11,13 @@ never holds the video files themselves. Everything this repo sees is a public pr
 
 | path | what it is |
 | :-- | :-- |
-| `score_nsfw.py` | the scorer: reads `manifest.json`, downloads each preview picture, writes per-frame probabilities |
+| `score_nsfw.py` | the scorer: reads a manifest (passed at dispatch), downloads each preview picture, writes per-frame probabilities |
 | `harness/frames.py` | the frame-selection contract (`0, n/3, 2n/3, n-1` of `n` preview pictures) and the public preview-URL shapes |
 | `harness/manifest.py` | flat-manifest construction: opaque query ids, one shuffled list, hygiene assertions |
 | `tests/` | unit tests for both harness modules (`pytest -q`) |
 | `.github/workflows/nsfw-score.yml` | the existing scoring job (runs 1–5, 108 clips / 431 frames) |
 | `.github/workflows/tests.yml` | runs the unit tests on every push |
-| `manifest.json` | the current job: `{clip key, public preview URLs}` — nothing else |
+| `tests/fixtures/manifest_synthetic.json` | a 2-clip synthetic fixture for tests; real manifests are private and passed at dispatch |
 
 ## Models (pinned)
 
@@ -29,6 +29,7 @@ never holds the video files themselves. Everything this repo sees is a public pr
 ## Contract
 
 * a manifest row is exactly `{"clip": "<source>:<id>", "query": "qNN", "frames": [urls]}`;
+  manifests themselves are **not committed** here (they are fetched from a private source at dispatch);
   `harness.manifest.assert_hygiene` fails the build if any other field appears, if a query
   is not opaque, or if a frame URL is not a public Pexels preview picture;
 * the clips the pipeline has already used and the clips it could draw are merged into **one

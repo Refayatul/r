@@ -18,7 +18,7 @@ from harness.manifest import (  # noqa: E402
     sha256,
 )
 
-QUERIES = ['ottoman architecture', 'hands praying', 'hanging lantern night']
+QUERIES = ['q08', 'q09', 'q10']
 QIDS = opaque_qids(QUERIES)
 URLS = ['https://images.pexels.com/videos/1/pictures/preview-0.jpeg']
 
@@ -67,7 +67,7 @@ def test_flatten_does_not_mutate_the_arm_lists():
 @pytest.mark.parametrize('bad_row,message', [
     ({'clip': 'pexels:1', 'query': 'q01', 'frames': [], 'mark': 'x'}, 'unexpected fields'),
     ({'clip': '1', 'query': 'q01', 'frames': []}, 'clip key'),
-    ({'clip': 'pexels:1', 'query': 'hands praying', 'frames': []}, 'opaque id'),
+    ({'clip': 'pexels:1', 'query': 'two words', 'frames': []}, 'opaque id'),
     ({'clip': 'pexels:1', 'query': 'q01', 'frames': ['/home/kai/frame.jpg']}, 'public preview URL'),
     ({'clip': 'pexels:1', 'query': 'q01', 'frames': ['https://evil.example/x.jpg']}, 'public preview URL'),
 ])

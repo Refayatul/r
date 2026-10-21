@@ -22,7 +22,7 @@ def test_siglip_revision_is_pinned():
 
 def test_siglip_outputs_match_production_formula():
     # production: sigmoid(logit_scale * cosine + logit_bias)
-    cos, scale, bias = 0.08, 4.724453, -16.771725
+    cos, scale, bias = 0.5, 10.0, -4.0
     expected = 1 / (1 + math.exp(-(scale * cos + bias)))
     assert score.sigmoid_prob(cos, scale, bias) == pytest.approx(expected, rel=0, abs=1e-12)
     # monotone in cosine and bounded
@@ -59,14 +59,14 @@ def test_parse_models_rejects_unknown_and_dedupes():
 
 
 def test_cross_check_reports_summary_only():
-    computed = {'siglip': {'pexels:1': 0.0800, 'pexels:2': 0.0400}}
-    refs = {'siglip': {'pexels:1': 0.0817, 'pexels:2': 0.0400, 'pexels:3': 0.02}}
+    computed = {'siglip': {'pexels:1': 0.5000, 'pexels:2': 0.4900}}
+    refs = {'siglip': {'pexels:1': 0.5010, 'pexels:2': 0.4900, 'pexels:3': 0.02}}
     rep = score.cross_check(computed, refs, 1e-3)
     assert rep['siglip']['clips_compared'] == 2
     assert rep['siglip']['clips_reference_only'] == 1
-    assert rep['siglip']['n_outside_tol'] == 1  # |0.0800-0.0817| > 1e-3
-    assert rep['siglip']['max_abs_delta'] == pytest.approx(0.0017, abs=1e-6)
-    assert '0.0817' not in str(rep)  # no reference values echoed
+    assert rep['siglip']['n_outside_tol'] == 1  # |0.5000-0.5010| > 1e-3
+    assert rep['siglip']['max_abs_delta'] == pytest.approx(0.0010, abs=1e-6)
+    assert '0.5010' not in str(rep)  # no reference values echoed
 
 
 def test_per_clip_max_uses_all_frames():

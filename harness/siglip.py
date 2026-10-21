@@ -1,6 +1,6 @@
 """SigLIP helpers that must stay importable without torch.
 
-Production (projects/youtube-shorts/src/visual_director.py) thresholds
+Production thresholds
 sigmoid(logit_scale * cosine + logit_bias) on label index 0. The census must reproduce
 that exactly, keep the label text out of logs and artifacts, and pin the revision.
 """

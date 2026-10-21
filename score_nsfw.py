@@ -284,7 +284,7 @@ def main() -> int:
               f'{len(video_items)} frames (total {total})', flush=True)
 
     result = {'manifest': args.manifest, 'models': models, 'clips': keys,
-              'frames_total': total, 'frames_scored': len(items) + len(video_items)}
+              'frames_total': total, 'frames_scored': len(items)}
     per_model_clip = {}
 
     # 3) Marqo
