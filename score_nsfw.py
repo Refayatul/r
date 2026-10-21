@@ -208,8 +208,6 @@ def main() -> int:
     ap.add_argument('--tolerance', type=float, default=1e-3)
     args = ap.parse_args()
 
-    import torch
-    torch.set_num_threads(os.cpu_count() or 2)
     man = json.load(open(args.manifest))
     clips = man['clips']
     assert clips, 'empty manifest'
@@ -225,6 +223,9 @@ def main() -> int:
 
     if args.preflight:
         return preflight(clips, out, args.fail_on_missing_fraction)
+
+    import torch
+    torch.set_num_threads(os.cpu_count() or 2)
 
     models = parse_models(args.models)
     work = Path('/tmp/frames')
