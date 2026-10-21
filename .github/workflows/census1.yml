@@ -100,6 +100,8 @@ jobs:
           python-version: '3.12'
           cache: pip
       - run: python -m pip install -q -r requirements.txt
+      - name: Install ffmpeg (video arm)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
       - name: Score chunk ${{ matrix.chunk }} (cascade, 20% audit, 8 chunks)
         run: |
           python score_nsfw.py \
@@ -115,6 +117,7 @@ jobs:
         with:
           name: census1-chunk-${{ matrix.chunk }}
           path: out/chunk_${{ matrix.chunk }}/scores.json
+          if-no-files-found: warn
           retention-days: 7
 
   aggregate:
