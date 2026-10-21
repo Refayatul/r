@@ -142,6 +142,7 @@ def load_siglip(device: str):
 
 def score_siglip(items, proc, model, label, device):
     import torch
+    from PIL import Image
     """Returns (per-frame list, seconds, meta). Batches the 4 frames of a clip."""
     import numpy as _np  # heavy import kept local; numpy ships with torch
     from collections import defaultdict, OrderedDict
