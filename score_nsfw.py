@@ -28,10 +28,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
-import requests
-import torch
-from huggingface_hub import snapshot_download
-from PIL import Image
+import requests  # preflight needs only this; torch/PIL are imported where used
 
 from harness.siglip import (  # pure helpers, importable without torch
     LABEL_ENV,
@@ -88,6 +85,7 @@ def fetch(url: str, dest: Path) -> None:
                     time.sleep(2 * (attempt + 1))
                     continue
                 dest.write_bytes(r.content)
+                from PIL import Image
                 with Image.open(dest) as im:
                     im.load()
                     w, h = im.size
@@ -133,6 +131,8 @@ def preflight(clips: list[dict], out: Path, fail_fraction: float) -> int:
 
 
 def load_siglip(device: str):
+    import torch
+    from huggingface_hub import snapshot_download
     from transformers import AutoProcessor, SiglipModel
     d = snapshot_download(SIGLIP_REPO, revision=SIGLIP_REV)
     proc = AutoProcessor.from_pretrained(d)
@@ -208,6 +208,7 @@ def main() -> int:
     ap.add_argument('--tolerance', type=float, default=1e-3)
     args = ap.parse_args()
 
+    import torch
     torch.set_num_threads(os.cpu_count() or 2)
     man = json.load(open(args.manifest))
     clips = man['clips']
@@ -287,6 +288,9 @@ def main() -> int:
     mq_scores, mq_elapsed = {}, 0.0
     if 'marqo' in models:
         print('loading Marqo', MARQO_REPO, MARQO_REV, flush=True)
+        import torch
+        from huggingface_hub import snapshot_download
+        from PIL import Image
         import timm
         from safetensors.torch import load_file
         mq_dir = snapshot_download(MARQO_REPO, revision=MARQO_REV)
@@ -356,6 +360,9 @@ def main() -> int:
 
     if 'freepik' in models:
         print('loading Freepik', FREEPIK_REPO, FREEPIK_REV, flush=True)
+        import torch
+        from huggingface_hub import snapshot_download
+        from PIL import Image
         from transformers import AutoImageProcessor, AutoModelForImageClassification
         fp_dir = snapshot_download(FREEPIK_REPO, revision=FREEPIK_REV)
         proc = AutoImageProcessor.from_pretrained(fp_dir)
