@@ -1,0 +1,52 @@
+name: siglip-transformers-parity
+
+# One-off parity check: same 14 audit anchors + 20 used clips, same pinned model
+# revision, same 4 preview frames, scored under transformers 5.20.1 then 5.20.2.
+# The label comes from the repository secret; no label text is logged or stored.
+on:
+  workflow_dispatch:
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+  HF_HUB_DISABLE_TELEMETRY: '1'
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MODESTY_LABEL: ${{ secrets.MODESTY_LABEL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install 5.20.1 stack
+        run: |
+          python -m pip install --upgrade pip
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.14.1
+          pip install transformers==5.20.1 pillow==13.0.0 requests==2.34.2
+      - name: Fetch 4 frames per clip (once, reused by both versions)
+        run: python parity_siglip.py --mode fetch
+      - name: Score under 5.20.1
+        run: python parity_siglip.py --mode score --out out/scores_5201.json
+      - name: Install 5.20.2 stack
+        run: pip install transformers==5.20.2
+      - name: Score under 5.20.2
+        run: python parity_siglip.py --mode score --out out/scores_5202.json
+      - name: Compare at 1e-3
+        run: python parity_siglip.py --mode compare --a out/scores_5201.json --b out/scores_5202.json --out out/parity.json
+      - name: Show summary
+        run: |
+          echo "--- parity summary ---"
+          cat out/parity.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: siglip-transformers-parity
+          path: |
+            out/scores_5201.json
+            out/scores_5202.json
+            out/parity.json
+          retention-days: 14
