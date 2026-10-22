@@ -5,6 +5,9 @@ name: siglip-transformers-parity
 # The label comes from the repository secret; no label text is logged or stored.
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - parity/transformers-5202
 
 env:
   PIP_DISABLE_PIP_VERSION_CHECK: '1'
